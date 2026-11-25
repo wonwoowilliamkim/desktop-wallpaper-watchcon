@@ -126,6 +126,8 @@ body { font-size: clamp(11px, .8vw, 14px); line-height: 1.4; letter-spacing: .02
 .wx .temp { color: var(--acc); font-size: 1.25em; }
 .wx .cond { font-size: .9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wx .next { color: var(--muted); font-size: .8em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#rightTop.compact .wx .next { display: none; } /* set by fitRight() when the column is too short */
+#rightTop.compact .fx { padding: 1px 0; }
 
 /* bottom row: logs (under the map) + feed status (under the right-side icons) */
 #logPanel { grid-column: 1; grid-row: 3; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 1.6em; overflow: hidden; }
@@ -765,6 +767,15 @@ body { font-size: clamp(11px, .8vw, 14px); line-height: 1.4; letter-spacing: .02
       return `<div class="wx"><div class="top">${head}<span class="temp">${Math.round(d.max)}° / ${Math.round(d.min)}°</span></div>` +
         `<div class="cond">${wmo(d.code)}${pop}</div>${nxt}</div>`;
     }).join("");
+    fitRight();
+  }
+
+  // When fx + weather don't fit the right column (short screens, e.g. a 1600x800 browser window clipped the last
+  // TMRW line), switch to the compact layout instead of clipping. Re-checked on every weather render and resize.
+  function fitRight() {
+    const rt = $("#rightTop");
+    rt.classList.remove("compact");
+    if (rt.scrollHeight > rt.clientHeight + 1) rt.classList.add("compact");
   }
 
   function renderLogs() {
@@ -832,7 +843,7 @@ body { font-size: clamp(11px, .8vw, 14px); line-height: 1.4; letter-spacing: .02
   document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
   window.addEventListener("online", () => tick());          // back online: refresh status + run any overdue sync
   window.addEventListener("offline", () => renderStatus()); // uplink LOST shows immediately
-  window.addEventListener("resize", debounce(() => { hideTip(); drawMap(); }, 250));
+  window.addEventListener("resize", debounce(() => { hideTip(); drawMap(); fitRight(); }, 250));
 
   if (navigator.getBattery) {
     navigator.getBattery().then((b) => {
