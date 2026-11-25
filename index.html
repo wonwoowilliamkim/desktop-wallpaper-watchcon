@@ -1,0 +1,860 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Global Watch</title>
+<!--
+  GLOBAL WATCH: passive OSINT-style wallpaper for Lively Wallpaper (web wallpaper).
+  Data refresh: once per 24h per feed (failed feeds retry after 30 min). No animation loop:
+  the only recurring work is a once-a-minute clock update, so battery cost stays near zero.
+  Feeds (no API key): USGS earthquakes, GDACS disaster alerts, Frankfurter (ECB FX), Open-Meteo.
+  Layout leaves the desktop-icon areas black (see the keep-out variables in :root).
+-->
+<style>
+:root {
+  --bg: #000;
+  --line: #10342a;
+  --line-hi: #1f5f4a;
+  --acc: #39e0a0;
+  --acc-dim: rgba(57, 224, 160, .55);
+  --cyan: #4fd1e8;
+  --amber: #f5a524;
+  --red: #ff5f5f;
+  --text: #9fcfbd;
+  --muted: #4c7466;
+  --blue: #5cb8ff;
+  --blue-dim: rgba(92, 184, 255, .7);
+  --font: "Cascadia Mono", "JetBrains Mono", Consolas, ui-monospace, Menlo, "Courier New", monospace; /* ui-monospace/Menlo: macOS */
+  --shell-top: 0px;     /* top of the layout; the Seoul (macOS) profile moves it below the menu bar */
+
+  /* Keep-out zones for the desktop icons on this laptop, in CSS px
+     (2880x1800 panel at 200% scaling = 1440x900 viewport). Measured 2026-11-24 with
+     tools/measure-desktop-icons.ps1. If the icons move, re-run it and update these numbers. */
+  --left: 237px;        /* icon columns occupy x 0-225, y 0-770 */
+  --top: 82px;          /* top-center icons occupy y 0-70 (x 525-825) */
+  --home-w: 272px;      /* free strip x 237-509, left of the top-center icons: home clock */
+  --clocks-w: 585px;    /* free strip x 840-1425, right of the top-center icons: other clocks */
+  --right-w: 225px;     /* right column x 1200-1425 = same width as the 3-column folder block below it */
+  --right-edge: 15px;   /* content ends at x 1425, the right edge of that folder block */
+  --right-free: 408px;  /* right column (fx + weather) fills y 82-490; icons start at y 502 */
+  --status-top: 682px;  /* feed status starts below those icons */
+  --content-bottom: 770px; /* panels end at the bottom of the last icon row (y 770) */
+  --log-h: 134px;       /* log row: title + exactly 6 lines of 16px (y 636-770) */
+  --taskbar: 48px;      /* y 852-900; the red OPCON line sits in the free band y 770-852 */
+  --gap: 12px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); overflow: hidden; }
+body { font-size: clamp(11px, .8vw, 14px); line-height: 1.4; letter-spacing: .02em; user-select: none; -webkit-font-smoothing: antialiased; }
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-thumb { background: var(--line-hi); }
+::-webkit-scrollbar-track { background: transparent; }
+
+#shell {
+  position: absolute; top: var(--shell-top); left: var(--left); right: var(--right-edge); height: var(--content-bottom);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--right-w);
+  grid-template-rows: calc(var(--top) - var(--gap)) minmax(0, 1fr) var(--log-h);
+  gap: var(--gap);
+}
+
+/* header: home clock (left of the top icons) + other clocks (right of them); the middle stays black */
+#hdr { grid-column: 1 / -1; grid-row: 1; display: grid; grid-template-columns: var(--home-w) minmax(0, 1fr) var(--clocks-w); align-items: center; min-height: 0; }
+#clocks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.clock { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; column-gap: .75em; white-space: nowrap; overflow: hidden; }
+#clocks .clock { padding-left: 1em; border-left: 1px solid var(--line); }
+.clock .t { grid-row: 1 / span 2; color: var(--acc); font-size: 2.5em; line-height: 1; letter-spacing: .02em; }
+.clock .id { align-self: end; color: var(--muted); font-size: .82em; letter-spacing: .16em; }
+.clock .d { align-self: start; color: var(--text); font-size: 1.08em; letter-spacing: .05em; }
+.clock.home .t { color: var(--blue); font-size: 3em; }
+.clock.home .id { color: var(--blue-dim); }
+.clock.home .d { color: #cfe6ff; }
+
+.panel { position: relative; border: 1px solid var(--line); background: linear-gradient(180deg, rgba(18, 64, 48, .16), rgba(0, 0, 0, 0) 70%); padding: 8px 11px; min-height: 0; min-width: 0; }
+.panel::before, .panel::after { content: ""; position: absolute; width: 9px; height: 9px; border: 0 solid var(--acc-dim); pointer-events: none; }
+.panel::before { top: -1px; left: -1px; border-top-width: 1px; border-left-width: 1px; }
+.panel::after { bottom: -1px; right: -1px; border-bottom-width: 1px; border-right-width: 1px; }
+.ptitle { display: flex; justify-content: space-between; gap: 1em; color: var(--muted); font-size: .82em; letter-spacing: .2em; margin-bottom: 6px; white-space: nowrap; }
+.ptitle b { color: var(--acc); font-weight: 400; }
+.muted { color: var(--muted); }
+
+/* map */
+#mapPanel { grid-column: 1; grid-row: 2; display: flex; flex-direction: column; }
+#mapWrap { position: relative; flex: 1; min-height: 0; }
+#dots, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
+#overlay [data-id] { cursor: crosshair; }
+.q { fill-opacity: .16; stroke-width: 1; }
+.hz { fill-opacity: .25; stroke-width: 1; }
+.q.hot, .hz.hot { stroke-width: 2.4; fill-opacity: .55; }
+.m-lo { fill: var(--cyan); stroke: var(--cyan); }
+.m-mid { fill: var(--amber); stroke: var(--amber); }
+.m-hi { fill: var(--red); stroke: var(--red); }
+.lvl-green { fill: var(--acc); stroke: var(--acc); }
+.lvl-orange { fill: var(--amber); stroke: var(--amber); }
+.lvl-red { fill: var(--red); stroke: var(--red); }
+.city rect { fill: #e8f5ef; }
+.city line { stroke: rgba(232, 245, 239, .45); }
+.city text { fill: #dfeee8; font-size: 11px; letter-spacing: .15em; font-family: var(--font); paint-order: stroke; stroke: #000; stroke-width: 3px; stroke-linejoin: round; } /* black halo keeps labels readable over markers */
+.city.home rect, .city.home text { fill: var(--blue); }
+.city.home line { stroke: var(--blue-dim); }
+.city .badge { fill: #ff4d6d; } /* the heart after a label (profile "badge") */
+.city rect.hit, .city.home rect.hit { fill: transparent; } /* hover area for a label with a message */
+#tip { position: absolute; display: none; pointer-events: none; z-index: 5; max-width: 28em; background: rgba(0, 0, 0, .94); border: 1px solid var(--line-hi); padding: .55em .75em; white-space: normal; }
+#tip .h { color: var(--acc); margin-bottom: .2em; }
+#tip .love { color: #ff8fa3; font-size: 1.15em; } /* the hover message on a city label */
+.legend { display: flex; flex-wrap: wrap; gap: .3em 1.6em; color: var(--muted); font-size: .8em; letter-spacing: .04em; margin-top: 4px; }
+.offline { position: absolute; inset: 0; display: grid; place-items: center; color: var(--red); letter-spacing: .2em; }
+
+/* right column (above the right-side icons): fx + weather */
+#rightTop { grid-column: 2; grid-row: 2; align-self: start; display: flex; flex-direction: column; gap: var(--gap); height: var(--right-free); min-height: 0; overflow: hidden; }
+/* weather fills the rest of the column down to y 490 (12px above the right-side icons); its 3 city rows share that height evenly */
+#wxPanel { flex: 1; display: flex; flex-direction: column; }
+#wx { flex: 1; display: flex; flex-direction: column; }
+#wx .wx { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+.fx { display: grid; grid-template-columns: 1fr auto; align-items: center; padding: 3px 0; border-bottom: 1px dashed var(--line); }
+.fx .pair { color: var(--muted); letter-spacing: .12em; }
+.fx .v { color: var(--acc); font-size: 1.35em; text-align: right; }
+.fx .chg { font-size: .82em; }
+.fx svg { width: 6.5em; height: 1.4em; justify-self: end; overflow: visible; }
+.fx polyline { fill: none; stroke: var(--acc-dim); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.up { color: var(--cyan); }
+.down { color: var(--amber); }
+.wx { padding: 3px 0; border-bottom: 1px dashed var(--line); }
+.fx:last-child, .wx:last-child { border-bottom: 0; }
+.wx .top { display: flex; justify-content: space-between; align-items: baseline; gap: .6em; white-space: nowrap; }
+.wx .temp { color: var(--acc); font-size: 1.25em; }
+.wx .cond { font-size: .9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wx .next { color: var(--muted); font-size: .8em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* bottom row: logs (under the map) + feed status (under the right-side icons) */
+#logPanel { grid-column: 1; grid-row: 3; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 1.6em; overflow: hidden; }
+.logcol { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+/* logs always scroll (wheel where the host forwards it, plus the ▲▼ buttons in each title); the 4px thumb only shows on hover */
+.log { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.log::-webkit-scrollbar-thumb { background: transparent; }
+.log:hover::-webkit-scrollbar-thumb { background: var(--line-hi); }
+.lognav { display: flex; align-items: center; gap: .3em; }
+.lognav button { background: transparent; border: 0; padding: 0 .35em; color: var(--muted); font: inherit; line-height: 1; cursor: pointer; }
+.lognav button:hover { color: var(--acc); }
+.ev { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 .3em; line-height: 16px; height: 16px; }
+.ev.hot { background: rgba(57, 224, 160, .1); color: #dfeee8; }
+.ev .ts { color: var(--muted); }
+.ev .k { display: inline-block; min-width: 4.6em; }
+.c-lo { color: var(--cyan); }
+.c-green { color: var(--acc); }
+.c-mid, .c-orange { color: var(--amber); }
+.c-hi, .c-red { color: var(--red); }
+
+/* compact feed status: below the right-side icons, same bottom line as the logs */
+#statusPanel { grid-column: 2; grid-row: 3; align-self: end; height: calc(var(--content-bottom) - var(--status-top)); overflow: hidden; }
+.fdots { display: flex; justify-content: space-between; white-space: nowrap; font-size: .9em; }
+.fd { display: inline-flex; align-items: center; gap: .25em; cursor: default; }
+.dot { width: .55em; height: .55em; border-radius: 50%; background: var(--muted); }
+.dot.ok { background: var(--acc); }
+.dot.stale { background: var(--amber); }
+.dot.err { background: var(--red); }
+.sline { color: var(--muted); white-space: nowrap; overflow: hidden; }
+.sline b { color: var(--text); font-weight: 400; }
+/* red OPCON line: full width, in the free band between the last icon row and the taskbar */
+#opcon {
+  position: absolute; left: var(--gap); right: var(--right-edge);
+  top: calc((var(--shell-top) + var(--content-bottom) + 100vh - var(--taskbar)) / 2 - 8px);
+  display: flex; align-items: center; gap: 1.2em;
+  color: var(--red); font-size: .95em; letter-spacing: .08em; white-space: nowrap;
+}
+#opcon .msg { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#opcon .lead { color: #ff8080; font-weight: 600; letter-spacing: .14em; }
+#opcon .sep { color: rgba(255, 95, 95, .45); margin: 0 .55em; }
+#opcon .cls { flex-shrink: 0; color: rgba(255, 95, 95, .7); }
+#opcon .sync { animation: blink 1s steps(2, start) infinite; } /* only present for the few seconds a sync runs */
+#opcon .raised { color: #ff8080; font-weight: 600; } /* DEFCON below 5 or INFOCON above NORMAL */
+@keyframes blink { to { visibility: hidden; } }
+#syncBtn { background: transparent; border: 0; padding: 0; color: var(--acc); font: inherit; letter-spacing: .2em; cursor: pointer; }
+#syncBtn:hover { color: #dfeee8; }
+#syncBtn:disabled { color: var(--muted); cursor: default; }
+</style>
+</head>
+<body>
+<div id="shell">
+  <header id="hdr">
+    <div id="clockHome"></div>
+    <div></div>
+    <div id="clocks"></div>
+  </header>
+
+  <section class="panel" id="mapPanel">
+    <div class="ptitle"><span>WORLD // SEISMIC 7D + GDACS ALERTS</span><span id="mapStats"></span></div>
+    <div id="mapWrap">
+      <canvas id="dots"></canvas>
+      <svg id="overlay" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div id="tip"></div>
+    </div>
+    <div class="legend">
+      <span><span class="c-lo">○</span><span class="c-mid">○</span><span class="c-hi">○</span> M2.5+ / 4.5+ / 6+ · size = mag · faded = older</span>
+      <span><span class="c-green">▲</span><span class="c-orange">▲</span><span class="c-red">▲</span> GDACS green / orange / red</span>
+      <span>■ home</span>
+      <span>hover = details</span>
+    </div>
+  </section>
+
+  <div id="rightTop">
+    <section class="panel">
+      <div class="ptitle"><span>FX // ECB REF</span><b id="fxDate">--</b></div>
+      <div id="fx"></div>
+    </section>
+    <section class="panel" id="wxPanel">
+      <div class="ptitle"><span>WEATHER</span><b>TODAY</b></div>
+      <div id="wx"></div>
+    </section>
+  </div>
+
+  <section class="panel" id="logPanel">
+    <div class="logcol">
+      <div class="ptitle"><span>SEISMIC // USGS M2.5+ 7D</span><span class="lognav"><button type="button" data-log="logSeis" data-dir="-1" title="scroll up">▲</button><button type="button" data-log="logSeis" data-dir="1" title="scroll down">▼</button><b id="seisCount">0</b></span></div>
+      <div class="log" id="logSeis"></div>
+    </div>
+    <div class="logcol">
+      <div class="ptitle"><span>HAZARD // GDACS O+R 30D · G 14D</span><span class="lognav"><button type="button" data-log="logHz" data-dir="-1" title="scroll up">▲</button><button type="button" data-log="logHz" data-dir="1" title="scroll down">▼</button><b id="hzCount">0</b></span></div>
+      <div class="log" id="logHz"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="statusPanel">
+    <div class="ptitle"><span>FEEDS</span><button id="syncBtn" type="button">[ SYNC ]</button></div>
+    <div id="status"></div>
+  </section>
+</div>
+<div id="opcon"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
+<script>
+(() => {
+  "use strict";
+
+  // ---------- config ----------
+  const DAY = 86400e3;
+
+  // Cities. Map label placement: tag = compass side of the marker (n, ne, e, se, s, sw, w, nw; default ne),
+  // len = leader length px (default 12), reach = extra horizontal run px. Each label sits over open sea so quake
+  // markers and land dots don't cover it (positions checked against the 1440x900 map).
+  const CITY = {
+    IRV: { id: "IRV", name: "Irvine", tz: "America/Los_Angeles", lat: 33.6846, lon: -117.8265, tag: "sw", reach: 26 }, // Pacific
+    SEL: { id: "SEL", name: "Seoul", tz: "Asia/Seoul", lat: 37.5665, lon: 126.978, tag: "se", len: 30 },               // Philippine Sea
+    RTM: { id: "RTM", name: "Rotterdam", tz: "Europe/Amsterdam", lat: 51.9244, lon: 4.4777, tag: "nw", reach: 24 },  // North Sea -> Atlantic
+  };
+
+  // Profiles: one file, two wallpapers, picked by the URL query.
+  //   (no query)  William's Lively wallpaper: Irvine home, layout around his desktop icons (the :root numbers).
+  //   ?p=seoul    the Seoul version for a MacBook in Plash: Seoul home, Irvine with a heart and a hover message,
+  //               no icon keep-outs, room for the macOS menu bar (top) and Dock (bottom).
+  // cities = order (first is home: blue, big clock); extra = per-city additions (badge = red mark after the map
+  // label, msg = tooltip on hovering that label); vars = CSS layout variables that replace the :root ones.
+  const PROFILES = {
+    default: { cities: ["IRV", "SEL", "RTM"], extra: { SEL: { badge: "♥" } }, vars: {} },
+    seoul: {
+      cities: ["SEL", "IRV", "RTM"],
+      extra: { IRV: { badge: "♥", msg: "오늘도 화이팅! 사룽해~" } },
+      vars: {
+        "--shell-top": "40px",    // below the macOS menu bar (about 37px on notched MacBooks)
+        "--left": "16px",
+        "--right-edge": "16px",
+        "--right-w": "clamp(225px, 15.5vw, 300px)", // grows with the font on 15-16" screens (fixed 225px clipped FEEDS)
+        "--taskbar": "84px",      // the Dock at its default size; set to 8px if the Dock auto-hides
+        "--content-bottom": "calc(100vh - var(--shell-top) - var(--taskbar) - 46px)", // 46px band for the OPCON line
+        "--right-free": "calc(var(--content-bottom) - var(--top) - var(--log-h) - var(--gap))", // fx + weather fill row 2
+        "--status-top": "calc(var(--content-bottom) - 88px)",
+      },
+    },
+  };
+  const PROFILE = PROFILES[new URLSearchParams(location.search).get("p")] || PROFILES.default;
+  for (const [k, v] of Object.entries(PROFILE.vars)) document.documentElement.style.setProperty(k, v);
+
+  const CFG = {
+    refreshMs: DAY,          // each feed refreshes once per 24h
+    retryMs: 30 * 60e3,      // a failed feed retries after 30 min
+    latRange: [-56, 78],     // map crop (drops Antarctica / far Arctic)
+    // Thresholds for the red OPCON line. DEFCON follows world hazards, INFOCON follows how old our data is.
+    alert: {
+      activeDays: 3,         // a GDACS alert is "active" if its last update (todate) is within 3 days; drought excluded
+      quakeHours: 72,        // window for the largest USGS quake
+      quakeWatch: 7.0,       // DEFCON 4 from M7.0
+      quakeSevere: 8.0,      // DEFCON 3 from M8.0
+      redSevere: 3,          // DEFCON 3 from 3 active Red alerts
+      agingMs: 26 * 3600e3,  // INFOCON ALPHA once a feed is older than 26h (one missed daily refresh + slack)
+      staleMs: 72 * 3600e3,  // INFOCON BRAVO once a feed is older than 72h, or the map failed to load
+    },
+    cities: PROFILE.cities.map((id) => ({ ...CITY[id], ...(PROFILE.extra[id] || {}) })), // first = home (blue)
+    url: {
+      land: "https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-110m.json",
+      quakes: "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_week.geojson",
+      // GDACS SEARCH returns only Orange/Red unless alertlevel is given, and caps results at 100,
+      // so green events (mostly small wildfires) would crowd out everything else. Two queries instead:
+      // all types at Orange/Red over 30 days + cyclone/flood/volcano at Green over 14 days.
+      gdacs: (types, level, days) => {
+        const now = Date.now();
+        return "https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH?eventlist=" + types +
+          "&fromdate=" + isoDate(now - days * DAY) + "&todate=" + isoDate(now + DAY) + "&alertlevel=" + level;
+      },
+      fx: (from) => `https://api.frankfurter.dev/v1/${from}..?from=USD&to=KRW,EUR`,
+      wx: (cs) => "https://api.open-meteo.com/v1/forecast" +
+        "?latitude=" + cs.map((c) => c.lat).join(",") +
+        "&longitude=" + cs.map((c) => c.lon).join(",") +
+        "&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max" +
+        "&timezone=auto&forecast_days=3",
+    },
+  };
+  const HZ = { TC: "CYCLONE", FL: "FLOOD", VO: "VOLCANO", DR: "DROUGHT", WF: "WILDFIRE", EQ: "QUAKE" };
+
+  // ---------- helpers ----------
+  const $ = (s) => document.querySelector(s);
+  const pad = (n) => String(n).padStart(2, "0");
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const fmtZ = (ms) => { const d = new Date(ms); return `${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}Z`; };
+  const fmtDay = (ms) => { const d = new Date(ms); return `${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`; };
+  const hhmm = (ms) => { const d = new Date(ms); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+  const isoDate = (ms) => new Date(ms).toISOString().slice(0, 10);
+  const parseUTC = (s) => (s ? Date.parse(/Z$|[+-]\d\d:?\d\d$/.test(s) ? s : s + "Z") : NaN);
+  const magClass = (m) => (m >= 6 ? "hi" : m >= 4.5 ? "mid" : "lo");
+  const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+  const localISO = (tz, now) => new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+
+  function dur(ms) {
+    if (ms <= 0) return "NOW";
+    const h = Math.floor(ms / 3600e3), m = Math.floor((ms % 3600e3) / 60e3);
+    return h ? `${h}h ${pad(m)}m` : `${m}m`;
+  }
+  function tzOffset(tz, now) {
+    const p = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "shortOffset" }).formatToParts(now).find((x) => x.type === "timeZoneName");
+    return p ? p.value.replace("GMT", "UTC") : "";
+  }
+  function wmo(c) {
+    if (c === 0) return "CLEAR";
+    if (c === 1) return "MAINLY CLEAR";
+    if (c === 2) return "PARTLY CLOUDY";
+    if (c === 3) return "OVERCAST";
+    if (c === 45 || c === 48) return "FOG";
+    if (c >= 51 && c <= 57) return "DRIZZLE";
+    if (c >= 61 && c <= 67) return "RAIN";
+    if (c >= 71 && c <= 77) return "SNOW";
+    if (c >= 80 && c <= 82) return "SHOWERS";
+    if (c === 85 || c === 86) return "SNOW SHOWERS";
+    if (c >= 95) return "THUNDERSTORM";
+    return "CODE " + c;
+  }
+
+  // localStorage can be missing or throw (private mode, cleared data): never let it break the page.
+  const store = {
+    get(k) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch (e) { return null; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* storage unavailable: keep in memory only */ } },
+  };
+  // One cache per profile: weather rows are matched to cities by position, so a profile with a different city order
+  // must not read another profile's cached forecast (seen in testing: Seoul's row showed Irvine's temperatures).
+  const KEY = PROFILE === PROFILES.default ? "gw.v1" : "gw.v1." + new URLSearchParams(location.search).get("p");
+  const state = store.get(KEY) || { feeds: {} };
+  if (!state.feeds) state.feeds = {};
+  const feedData = (k) => (state.feeds[k] ? state.feeds[k].data : null);
+
+  async function getJSON(url, ms = 20000, cache = "no-store") {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), ms);
+    try {
+      const r = await fetch(url, { signal: ctl.signal, cache });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return await r.json();
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  // ---------- feeds (reduced before storing, so localStorage stays small) ----------
+  function reduceQuakes(gj) {
+    return gj.features
+      .filter((f) => f.geometry && f.properties && typeof f.properties.mag === "number")
+      .map((f) => ({
+        id: f.id, mag: f.properties.mag, place: f.properties.place || "unknown location",
+        time: f.properties.time, lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1],
+        depth: f.geometry.coordinates[2],
+      }))
+      .sort((a, b) => b.time - a.time);
+  }
+  function reduceGdacs(lists) {
+    const cutoff = Date.now() - 30 * DAY;
+    const seen = new Set();
+    return lists.flatMap((gj) => gj.features || [])
+      .filter((f) => f.geometry && f.geometry.type === "Point" && f.properties)
+      .map((f) => {
+        const p = f.properties;
+        const name = String(p.name || "").replace(/(\s*,)+/g, ",").replace(/\s{2,}/g, " ").trim();
+        return {
+          id: String(p.eventtype) + p.eventid, type: p.eventtype, name, level: p.alertlevel || "Green",
+          from: parseUTC(p.fromdate), to: parseUTC(p.todate), country: p.country || "",
+          sev: p.severitydata ? p.severitydata.severitytext : "",
+          lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1],
+        };
+      })
+      .filter((e) => e.to >= cutoff && !seen.has(e.id) && seen.add(e.id))
+      .sort((a, b) => b.to - a.to);
+  }
+  function reduceFx(r) {
+    const days = Object.keys(r.rates).sort();
+    return {
+      date: r.end_date || days[days.length - 1],
+      series: days.map((d) => ({ d, usdkrw: r.rates[d].KRW, eurusd: 1 / r.rates[d].EUR, eurkrw: r.rates[d].KRW / r.rates[d].EUR })),
+    };
+  }
+  function reduceWx(r) {
+    const arr = Array.isArray(r) ? r : [r];
+    return arr.map((loc) => ({
+      days: loc.daily.time.map((t, k) => ({
+        t, max: loc.daily.temperature_2m_max[k], min: loc.daily.temperature_2m_min[k], code: loc.daily.weather_code[k],
+        pop: loc.daily.precipitation_probability_max ? loc.daily.precipitation_probability_max[k] : null,
+      })),
+    }));
+  }
+
+  const FEEDS = [
+    { key: "seis", code: "SEIS", src: "USGS", run: async () => reduceQuakes(await getJSON(CFG.url.quakes)) },
+    { key: "gdacs", code: "HAZ", src: "GDACS", run: async () => reduceGdacs(await Promise.all([
+      getJSON(CFG.url.gdacs("TC;FL;VO;DR;WF", "Orange;Red", 30), 40000),
+      getJSON(CFG.url.gdacs("TC;FL;VO", "Green", 14), 40000),
+    ])) },
+    { key: "fx", code: "FX", src: "ECB", run: async () => reduceFx(await getJSON(CFG.url.fx(isoDate(Date.now() - 14 * DAY)))) },
+    { key: "wx", code: "WX", src: "METEO", run: async () => reduceWx(await getJSON(CFG.url.wx(CFG.cities))) },
+  ];
+
+  function dueAt(k) {
+    const f = state.feeds[k];
+    if (!f) return 0;
+    return f.ok ? f.at + CFG.refreshMs : (f.tried || 0) + CFG.retryMs;
+  }
+
+  let syncing = false;
+  async function runDue(now, force = false) {
+    if (syncing) return;
+    if (!force && navigator.onLine === false) return;
+    const due = FEEDS.filter((f) => force || now >= dueAt(f.key));
+    if (!due.length) return;
+    syncing = true;
+    renderStatus();
+    const res = await Promise.allSettled(due.map((f) => f.run()));
+    const t = Date.now();
+    res.forEach((r, i) => {
+      const k = due[i].key;
+      const prev = state.feeds[k] || {};
+      state.feeds[k] = r.status === "fulfilled"
+        ? { ok: true, at: t, tried: t, data: r.value }
+        : { ok: false, at: prev.at || 0, tried: t, data: prev.data || null, err: String((r.reason && r.reason.message) || r.reason) };
+    });
+    store.set(KEY, state);
+    syncing = false;
+    renderData();
+  }
+
+  // ---------- map ----------
+  const map = { proj: null, W: 0, H: 0, land: null, box: null };
+  let mapStatus = null;
+
+  async function initMap() {
+    if (typeof d3 === "undefined" || typeof topojson === "undefined") throw new Error("map libraries not loaded (offline?)");
+    let topo = store.get("gw.land110m");
+    if (!topo) {
+      topo = await getJSON(CFG.url.land, 30000, "default");
+      store.set("gw.land110m", topo);
+    }
+    map.land = topojson.feature(topo, topo.objects.land);
+    drawMap();
+  }
+
+  const inBox = (p) => p && map.box && p[0] >= map.box.x0 && p[0] <= map.box.x1 && p[1] >= map.box.y0 && p[1] <= map.box.y1;
+
+  function drawMap() {
+    const wrap = $("#mapWrap");
+    const W = wrap.clientWidth, H = wrap.clientHeight;
+    if (!W || !H || !map.land) return;
+    map.W = W; map.H = H;
+    const [la0, la1] = CFG.latRange;
+    const proj = d3.geoMercator().fitExtent([[6, 6], [W - 6, H - 6]], { type: "MultiPoint", coordinates: [[-179.99, la0], [179.99, la1]] });
+    map.proj = proj;
+    const [x0, y0] = proj([-179.99, la1]);
+    const [x1, y1] = proj([179.99, la0]);
+    map.box = { x0, y0, x1, y1 };
+
+    // 1) land mask on an offscreen canvas
+    const off = document.createElement("canvas");
+    off.width = Math.ceil(W); off.height = Math.ceil(H);
+    const o = off.getContext("2d", { willReadFrequently: true });
+    o.fillStyle = "#fff";
+    o.beginPath(); d3.geoPath(proj, o)(map.land); o.fill();
+    const mask = o.getImageData(0, 0, off.width, off.height).data;
+
+    // 2) visible canvas: graticule, faint coastline, dot matrix
+    const dpr = window.devicePixelRatio || 1;
+    const c = $("#dots");
+    c.width = Math.round(W * dpr); c.height = Math.round(H * dpr);
+    const ctx = c.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+
+    ctx.strokeStyle = "rgba(57, 224, 160, .07)"; ctx.lineWidth = 1; ctx.beginPath();
+    for (let lon = -150; lon <= 150; lon += 30) { const x = Math.round(proj([lon, 0])[0]) + 0.5; ctx.moveTo(x, y0); ctx.lineTo(x, y1); }
+    for (const lat of [-30, 0, 30, 60]) { const y = Math.round(proj([0, lat])[1]) + 0.5; ctx.moveTo(x0, y); ctx.lineTo(x1, y); }
+    ctx.stroke();
+    ctx.fillStyle = "rgba(76, 116, 102, .9)";
+    ctx.font = "10px " + getComputedStyle(document.body).fontFamily;
+    for (const lat of [-30, 0, 30, 60]) { const y = proj([0, lat])[1]; ctx.fillText(lat === 0 ? "EQ" : Math.abs(lat) + (lat > 0 ? "N" : "S"), x0 + 3, y - 3); }
+
+    ctx.save();
+    ctx.beginPath(); ctx.rect(x0, y0, x1 - x0, y1 - y0); ctx.clip();
+    ctx.strokeStyle = "rgba(79, 209, 232, .22)"; ctx.lineWidth = 1;
+    ctx.beginPath(); d3.geoPath(proj, ctx)(map.land); ctx.stroke();
+    ctx.restore();
+
+    const step = Math.max(5, Math.round((x1 - x0) / 160));
+    const r = Math.max(1, step * 0.24);
+    const MW = off.width;
+    ctx.fillStyle = "rgba(57, 224, 160, .5)";
+    ctx.beginPath();
+    for (let y = y0 + step / 2; y < y1; y += step) {
+      for (let x = x0 + step / 2; x < x1; x += step) {
+        if (mask[((y | 0) * MW + (x | 0)) * 4 + 3] > 127) { ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, Math.PI * 2); }
+      }
+    }
+    ctx.fill();
+    drawOverlay();
+  }
+
+  const SVGNS = "http://www.w3.org/2000/svg";
+  function svgEl(tag, attrs, parent) {
+    const e = document.createElementNS(SVGNS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    parent.appendChild(e);
+    return e;
+  }
+
+  function drawOverlay() {
+    const svg = $("#overlay");
+    svg.textContent = "";
+    if (!map.proj) return;
+    svg.setAttribute("viewBox", `0 0 ${map.W} ${map.H}`);
+    const now = Date.now();
+
+    for (const h of feedData("gdacs") || []) {
+      const p = map.proj([h.lon, h.lat]);
+      if (!inBox(p)) continue;
+      const s = 5.5;
+      svgEl("polygon", {
+        points: `${p[0]},${p[1] - s} ${p[0] + s},${p[1] + s * 0.8} ${p[0] - s},${p[1] + s * 0.8}`,
+        class: `hz lvl-${String(h.level).toLowerCase()}`, "data-id": h.id,
+      }, svg);
+    }
+
+    const qs = (feedData("seis") || []).slice().sort((a, b) => a.mag - b.mag); // big ones drawn last (on top)
+    for (const q of qs) {
+      const p = map.proj([q.lon, q.lat]);
+      if (!inBox(p)) continue;
+      const r = 2 + Math.max(0, q.mag - 2.5) * 1.6;
+      const age = Math.min(1, Math.max(0, (now - q.time) / (7 * DAY)));
+      svgEl("circle", {
+        cx: p[0].toFixed(1), cy: p[1].toFixed(1), r: r.toFixed(1),
+        class: `q m-${magClass(q.mag)}`, opacity: (1 - age * 0.6).toFixed(2), "data-id": q.id,
+      }, svg);
+    }
+
+    CFG.cities.forEach((c, i) => {
+      const p = map.proj([c.lon, c.lat]);
+      if (!inBox(p)) return;
+      const g = svgEl("g", { class: i === 0 ? "city home" : "city" }, svg); // first city = home (blue)
+      if (c.msg) g.setAttribute("data-id", "city:" + c.id); // hovering the label shows c.msg (see buildIndex/tipHTML)
+      svgEl("rect", { x: p[0] - 3, y: p[1] - 3, width: 6, height: 6 }, g);
+      const tag = c.tag || "ne", len = c.len || 12, reach = c.reach || 0;
+      const sx = tag.includes("e") ? 1 : tag.includes("w") ? -1 : 0, sy = tag.includes("s") ? 1 : tag.includes("n") ? -1 : 0;
+      const ex = p[0] + len * sx, ey = p[1] + len * sy; // end of the leader
+      svgEl("line", { x1: p[0] + 4 * sx, y1: p[1] + 4 * sy, x2: ex, y2: ey }, g);
+      if (reach && sx) svgEl("line", { x1: ex, y1: ey, x2: ex + reach * sx, y2: ey }, g); // elbow: horizontal run
+      let tx, ty, anchor;
+      if (reach && sx) { tx = ex + (reach + 2) * sx; ty = ey + 4; anchor = sx < 0 ? "end" : "start"; } // centred on the elbow
+      else if (!sx) { tx = ex; ty = sy > 0 ? ey + 11 : ey - 3; anchor = "middle"; }                     // straight up/down
+      else { tx = ex + 2 * sx; ty = sy < 0 ? ey - 1 : sy > 0 ? ey + 9 : ey + 4; anchor = sx < 0 ? "end" : "start"; }
+      const label = svgEl("text", { x: tx, y: ty, "text-anchor": anchor }, g);
+      label.textContent = c.id;
+      if (c.badge) svgEl("tspan", { class: "badge" }, label).textContent = c.badge; // no space: sits right after the id
+      if (c.msg) { // invisible hit area around the label text only (so quake markers near the city stay hoverable)
+        const bb = label.getBBox();
+        g.insertBefore(svgEl("rect", { class: "hit", x: bb.x - 4, y: bb.y - 4, width: bb.width + 8, height: bb.height + 8 }, g), g.firstChild);
+      }
+    });
+  }
+
+  // ---------- hover: marker <-> log cross-highlight + tooltip ----------
+  let items = new Map();
+  function buildIndex() {
+    items = new Map();
+    for (const q of feedData("seis") || []) items.set(q.id, { kind: "q", ...q });
+    for (const h of feedData("gdacs") || []) items.set(h.id, { kind: "h", ...h });
+    for (const c of CFG.cities) if (c.msg) items.set("city:" + c.id, { kind: "city", ...c });
+  }
+  function tipHTML(it) {
+    if (it.kind === "city") return `<div class="h">${esc(it.id)} · ${esc(it.name.toUpperCase())}</div><div class="love">${esc(it.msg)}</div>`;
+    if (it.kind === "q") {
+      const depth = typeof it.depth === "number" ? ` · depth ${Math.round(it.depth)} km` : "";
+      return `<div class="h">M${it.mag.toFixed(1)} · ${esc(it.place)}</div><div>${fmtZ(it.time)}${depth}</div>` +
+        `<div class="muted">${it.lat.toFixed(2)}, ${it.lon.toFixed(2)}</div>`;
+    }
+    return `<div class="h">${esc(HZ[it.type] || it.type)} · ${esc(String(it.level).toUpperCase())}</div><div>${esc(it.name)}</div>` +
+      `<div class="muted">${fmtDay(it.from)} → ${fmtDay(it.to)}${it.sev ? " · " + esc(it.sev) : ""}</div>`;
+  }
+  function hideTip() { $("#tip").style.display = "none"; }
+  function showTip(id) {
+    const it = items.get(id);
+    const tip = $("#tip");
+    if (!it || !map.proj) return hideTip();
+    const p = map.proj([it.lon, it.lat]);
+    if (!inBox(p)) return hideTip();
+    tip.innerHTML = tipHTML(it);
+    tip.style.display = "block";
+    const tw = tip.offsetWidth, th = tip.offsetHeight;
+    let x = p[0] + 14, y = p[1] + 14;
+    if (x + tw > map.W) x = p[0] - tw - 14;
+    if (y + th > map.H) y = p[1] - th - 14;
+    tip.style.left = Math.max(0, x) + "px";
+    tip.style.top = Math.max(0, y) + "px";
+  }
+  function highlight(id, on) {
+    document.querySelectorAll(`[data-id="${CSS.escape(id)}"]`).forEach((n) => n.classList.toggle("hot", on));
+  }
+  let hotId = null;
+  document.addEventListener("mouseover", (e) => {
+    const t = e.target && e.target.closest ? e.target.closest("[data-id]") : null;
+    const id = t ? t.getAttribute("data-id") : null;
+    if (id === hotId) return;
+    if (hotId) highlight(hotId, false);
+    hotId = id;
+    if (id) { highlight(id, true); showTip(id); } else hideTip();
+  });
+
+  // ---------- panels ----------
+  // Clock: big HH:MM on the left; city + UTC offset and the full local date (YYYY-MM-DD DDD) stacked on the right.
+  function clockHTML(c, now, home) {
+    const t = new Intl.DateTimeFormat("en-GB", { timeZone: c.tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(now);
+    const wd = new Intl.DateTimeFormat("en-GB", { timeZone: c.tz, weekday: "short" }).format(now).toUpperCase();
+    return `<div class="clock${home ? " home" : ""}"><div class="t">${t}</div>` +
+      `<div class="id">${c.name.toUpperCase()} · ${tzOffset(c.tz, now)}</div><div class="d">${localISO(c.tz, now)} ${wd}</div></div>`;
+  }
+  function renderClocks(now) {
+    const [home, ...rest] = CFG.cities; // first city is home (blue, bigger, top-left)
+    $("#clockHome").innerHTML = clockHTML(home, now, true);
+    $("#clocks").innerHTML = rest.map((c) => clockHTML(c, now, false)).join("");
+  }
+
+  let battery = null;
+  // Compact: one row of status dots (hover a dot for source + time/error), then LAST/NEXT sync and power.
+  function renderStatus(now = Date.now()) {
+    const rows = [{ key: "map", code: "MAP", src: "NE-110m" }, ...FEEDS];
+    const dots = rows.map((r) => {
+      const f = r.key === "map" ? mapStatus : state.feeds[r.key];
+      let cls = "", v = "WAIT";
+      if (f) {
+        const fresh = r.key === "map" || now - f.at < CFG.refreshMs + 2 * 3600e3;
+        if (f.ok && fresh) { cls = "ok"; v = "OK " + hhmm(f.at); }
+        else if (f.ok || f.data) { cls = "stale"; v = (f.ok ? "OLD " : "RETRY ") + (f.at ? hhmm(f.at) : ""); }
+        else { cls = "err"; v = "ERR"; }
+      }
+      const tip = `${r.code} ${r.src} · ${v}${f && f.err ? " · " + f.err : ""}`;
+      return `<span class="fd" title="${esc(tip)}"><span class="dot ${cls}"></span>${r.code}</span>`;
+    }).join("");
+    const last = Math.max(0, ...FEEDS.map((f) => (state.feeds[f.key] && state.feeds[f.key].at) || 0));
+    const next = Math.min(...FEEDS.map((f) => dueAt(f.key)));
+    const pwr = battery ? `<div class="sline">POWER <b>${Math.round(battery.level * 100)}% ${battery.charging ? "AC" : "BAT"}</b></div>` : "";
+    $("#status").innerHTML = `<div class="fdots">${dots}</div>` +
+      `<div class="sline">LAST <b>${last ? hhmm(last) : "--:--"}</b> · NEXT <b>${syncing ? "RUNNING" : dur(next - now)}</b></div>${pwr}`;
+    const btn = $("#syncBtn");
+    btn.textContent = syncing ? "SYNCING" : "[ SYNC ]";
+    btn.disabled = syncing;
+    renderOpcon(now);
+  }
+
+  // ---------- red OPCON line ----------
+  // Every segment that changes is tied to real state: SYSTEM STATUS follows the feeds, DEFCON follows world hazards,
+  // INFOCON follows data age, SATELLITE UPLINK follows the network connection (navigator.onLine, updated by the
+  // online/offline events; no polling). All thresholds live in CFG.alert.
+
+  // DEFCON: active GDACS Red alerts (drought excluded, it runs for months) and the largest USGS quake in the window.
+  // 5 by default; 4 on one Red alert or M7+; 3 on Red and M7+ together, 3+ Red alerts, or M8+.
+  function threatLevel(now) {
+    const A = CFG.alert;
+    const reds = (feedData("gdacs") || []).filter((h) =>
+      /red/i.test(h.level) && h.type !== "DR" && now - h.to <= A.activeDays * DAY);
+    const quakes = (feedData("seis") || []).filter((q) => now - q.time <= A.quakeHours * 3600e3);
+    const top = quakes.reduce((m, q) => (!m || q.mag > m.mag ? q : m), null);
+    const mag = top ? top.mag : 0;
+    const tip = (reds.length ? "ACTIVE RED: " + reds.map((h) => h.name).join("; ") : "NO ACTIVE RED ALERT") + " · " +
+      (top ? `MAX ${A.quakeHours}H: M${mag.toFixed(1)} ${top.place}` : `NO QUAKE DATA ${A.quakeHours}H`);
+    const why = [reds.length ? `${reds.length} RED` : "", mag >= A.quakeWatch ? `M${mag.toFixed(1)}` : ""].filter(Boolean).join(" · ");
+    if ((reds.length && mag >= A.quakeWatch) || reds.length >= A.redSevere || mag >= A.quakeSevere)
+      return { text: "DEFCON 3: ELEVATED READINESS", why, tip, raised: true };
+    if (reds.length || mag >= A.quakeWatch) return { text: "DEFCON 4: INCREASED WATCH", why, tip, raised: true };
+    return { text: "DEFCON 5: NORMAL READINESS", why: "", tip, raised: false };
+  }
+
+  // INFOCON: age of the oldest feed. NORMAL while every feed is younger than agingMs; ALPHA once one is older or a
+  // feed has never synced; BRAVO once one is older than staleMs or the map failed to load. Reason shows on hover only.
+  function infoLevel(now) {
+    const A = CFG.alert;
+    const ages = FEEDS.map((f) => { const s = state.feeds[f.key]; return s && s.at ? now - s.at : null; });
+    const known = ages.filter((a) => a !== null);
+    const oldest = known.length ? Math.max(...known) : 0;
+    const missing = ages.length - known.length;
+    const mapDown = !!(mapStatus && mapStatus.ok === false);
+    const tip = FEEDS.map((f, i) => `${f.code} ${ages[i] === null ? "NO DATA" : Math.floor(ages[i] / 3600e3) + "H"}`).join(" · ") +
+      " · MAP " + (mapDown ? "OFFLINE" : mapStatus ? "OK" : "LOADING");
+    if (oldest > A.staleMs || mapDown) return { text: "INFOCON BRAVO: DATA STALE", tip, raised: true };
+    if (oldest > A.agingMs || missing) return { text: "INFOCON ALPHA: DATA AGING", tip, raised: true };
+    return { text: "INFOCON NORMAL: NETWORK SECURE", tip, raised: false };
+  }
+
+  function renderOpcon(now = Date.now()) {
+    const fs = FEEDS.map((f) => state.feeds[f.key]);
+    const errors = fs.filter((f) => f && !f.ok).length;
+    const last = Math.max(0, ...fs.map((f) => (f && f.at) || 0));
+    let status;
+    if (syncing || !last) status = `<span class="sync">ESTABLISHING SECURE CONNECTION...</span>`;
+    else if (errors) status = `SYSTEM STATUS: DEGRADED (${errors} FEED${errors > 1 ? "S" : ""} DOWN)`;
+    else status = "SYSTEM STATUS: NOMINAL";
+    const uplink = navigator.onLine === false ? "SATELLITE UPLINK: LOST" : "SATELLITE UPLINK: STABLE";
+    const sep = `<span class="sep">//</span>`;
+    const seg = (l) => `<span${l.raised ? ` class="raised"` : ""} title="${esc(l.tip)}">${l.text}${l.why ? ` (${esc(l.why)})` : ""}</span>`;
+    $("#opcon").innerHTML = `<span class="msg"><span class="lead">GLOBAL WATCH OPCON</span>${sep}${status}${sep}` +
+      `${seg(threatLevel(now))}${sep}${seg(infoLevel(now))}${sep}${uplink}</span>` +
+      `<span class="cls">UNCLASSIFIED // FOUO</span>`;
+  }
+
+  function renderFx() {
+    const fx = feedData("fx");
+    const box = $("#fx");
+    if (!fx || !fx.series.length) { box.innerHTML = `<div class="muted">waiting for first sync</div>`; return; }
+    $("#fxDate").textContent = fx.date.slice(5);
+    const defs = [["USD/KRW", "usdkrw", 2], ["EUR/USD", "eurusd", 4], ["EUR/KRW", "eurkrw", 2]];
+    box.innerHTML = defs.map(([label, k, dp]) => {
+      const vals = fx.series.map((s) => s[k]);
+      const last = vals[vals.length - 1], prev = vals[vals.length - 2];
+      const chg = prev ? (last / prev - 1) * 100 : 0;
+      const lo = Math.min(...vals), hi = Math.max(...vals), span = hi - lo || 1;
+      const pts = vals.map((v, i) => `${((i / Math.max(1, vals.length - 1)) * 100).toFixed(1)},${(22 - ((v - lo) / span) * 20).toFixed(1)}`).join(" ");
+      const val = last.toLocaleString("en-US", { minimumFractionDigits: dp, maximumFractionDigits: dp });
+      return `<div class="fx"><span class="pair">${label}</span><span class="v">${val}</span>` +
+        `<span class="chg ${chg >= 0 ? "up" : "down"}">${chg >= 0 ? "+" : ""}${chg.toFixed(2)}% 1d</span>` +
+        `<svg viewBox="0 0 100 24" preserveAspectRatio="none"><polyline points="${pts}"/></svg></div>`;
+    }).join("");
+  }
+
+  function renderWeather(now = new Date()) {
+    const wx = feedData("wx");
+    const box = $("#wx");
+    if (!wx) { box.innerHTML = `<div class="muted">waiting for first sync</div>`; return; }
+    box.innerHTML = CFG.cities.map((c, i) => {
+      const loc = wx[i];
+      const head = `<span>${c.id} <span class="muted">${c.name.toUpperCase()}</span></span>`;
+      if (!loc) return "";
+      const idx = loc.days.findIndex((d) => d.t === localISO(c.tz, now));
+      if (idx < 0) return `<div class="wx"><div class="top">${head}<span class="muted">STALE</span></div></div>`;
+      const d = loc.days[idx], n = loc.days[idx + 1];
+      const pop = d.pop != null ? ` · RAIN ${d.pop}%` : "";
+      const nxt = n ? `<div class="next">TMRW ${wmo(n.code)} ${Math.round(n.max)}° / ${Math.round(n.min)}°</div>` : "";
+      return `<div class="wx"><div class="top">${head}<span class="temp">${Math.round(d.max)}° / ${Math.round(d.min)}°</span></div>` +
+        `<div class="cond">${wmo(d.code)}${pop}</div>${nxt}</div>`;
+    }).join("");
+  }
+
+  function renderLogs() {
+    const qs = feedData("seis") || [];
+    $("#seisCount").textContent = qs.length;
+    $("#logSeis").innerHTML = qs.slice(0, 150).map((q) =>
+      `<div class="ev" data-id="${esc(q.id)}"><span class="ts">${fmtZ(q.time)}</span> <span class="k c-${magClass(q.mag)}">M${q.mag.toFixed(1)}</span>${esc(q.place)}</div>`
+    ).join("") || `<div class="ev muted">waiting for first sync</div>`;
+
+    const hz = feedData("gdacs") || [];
+    $("#hzCount").textContent = hz.length;
+    $("#logHz").innerHTML = hz.map((h) => {
+      const lv = String(h.level).toLowerCase();
+      const ctry = h.country && !h.name.includes(h.country) ? ` <span class="muted">· ${esc(h.country)}</span>` : "";
+      return `<div class="ev" data-id="${esc(h.id)}"><span class="ts">${fmtDay(h.to)}</span> <span class="k c-${esc(lv)}">${esc(lv.toUpperCase())}</span>` +
+        `<span class="k">${esc(HZ[h.type] || h.type)}</span>${esc(h.name)}${ctry}</div>`;
+    }).join("") || `<div class="ev muted">waiting for first sync</div>`;
+  }
+
+  function renderStats() {
+    const qs = feedData("seis") || [], hz = feedData("gdacs") || [];
+    const max = qs.reduce((m, q) => Math.max(m, q.mag), 0);
+    const red = hz.filter((h) => /red/i.test(h.level)).length;
+    $("#mapStats").innerHTML = `SEIS <b>${qs.length}</b> · MAX <b>M${max.toFixed(1)}</b> · ALERTS <b>${hz.length}</b> · RED <b>${red}</b>`;
+  }
+
+  function renderData() {
+    buildIndex();
+    renderFx();
+    renderWeather();
+    renderLogs();
+    renderStats();
+    drawOverlay();
+    renderStatus();
+  }
+
+  // OLED care: nudge the whole layout by up to 2px each hour so static lines never sit on the same pixels.
+  function shiftPixels(now) {
+    const h = Math.floor(now.getTime() / 3600e3);
+    const t = `translate(${(h % 5) - 2}px, ${(Math.floor(h / 5) % 5) - 2}px)`;
+    $("#shell").style.transform = t;
+    $("#opcon").style.transform = t;
+  }
+
+  // ---------- one tick per minute: the only recurring work ----------
+  let tickTimer = null;
+  function tick() {
+    clearTimeout(tickTimer);
+    const now = new Date();
+    renderClocks(now);
+    if (now.getMinutes() === 0) { renderWeather(now); shiftPixels(now); }
+    renderStatus(now.getTime());
+    runDue(now.getTime());
+    tickTimer = setTimeout(tick, 60000 - (Date.now() % 60000) + 50);
+  }
+
+  $("#syncBtn").addEventListener("click", () => runDue(Date.now(), true));
+  // Log paging: ▲/▼ scroll a log by one page of whole lines, keeping one line of the old page in view.
+  // Wheel scrolling also works where the host forwards the wheel; these buttons only need a click.
+  document.querySelectorAll(".lognav button").forEach((b) => b.addEventListener("click", () => {
+    const log = document.getElementById(b.dataset.log);
+    const page = Math.max(1, Math.floor(log.clientHeight / 16) - 1) * 16; // .ev rows are 16px
+    log.scrollTop += Number(b.dataset.dir) * page; // instant: smooth scrollBy dropped calls in testing, and costs frames
+  }));
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+  window.addEventListener("online", () => tick());          // back online: refresh status + run any overdue sync
+  window.addEventListener("offline", () => renderStatus()); // uplink LOST shows immediately
+  window.addEventListener("resize", debounce(() => { hideTip(); drawMap(); }, 250));
+
+  if (navigator.getBattery) {
+    navigator.getBattery().then((b) => {
+      battery = b;
+      b.addEventListener("levelchange", () => renderStatus());
+      b.addEventListener("chargingchange", () => renderStatus());
+      renderStatus();
+    }).catch(() => {});
+  }
+
+  // ---------- boot ----------
+  shiftPixels(new Date());
+  renderData();
+  tick();
+  initMap()
+    .then(() => { mapStatus = { ok: true, at: Date.now() }; })
+    .catch((e) => {
+      mapStatus = { ok: false, at: 0, err: e.message };
+      $("#mapWrap").insertAdjacentHTML("beforeend", `<div class="offline">MAP OFFLINE · ${esc(e.message)}</div>`);
+    })
+    .finally(() => renderStatus());
+})();
+</script>
+</body>
+</html>
